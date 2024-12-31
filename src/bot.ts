@@ -1,9 +1,13 @@
+import 'dotenv/config';
+import path from 'path'
+import { nodewhisper } from 'nodejs-whisper'
 import { Client, GatewayIntentBits, Events } from "discord.js";
 import { joinVoiceChannel, getVoiceConnection } from "@discordjs/voice";
-import 'dotenv/config';
-const { opus } = require('prism-media');
+
 const fs = require('fs');
+const { opus } = require('prism-media');
 const ffmpeg = require('fluent-ffmpeg');
+
 
 const client = new Client({
     intents: [
@@ -27,7 +31,6 @@ client.on('messageCreate', (message) => {
         message.channel.send('hey');
     }
 });
-
 
 async function createNewRecording() {
     if (!fs.existsSync('./recordings')) {
@@ -66,6 +69,24 @@ function convertPcmToMp3(inputFilePath: string, outputFilePath: string) {
     });
 }
 
+async function transcribeAudioToJson() {
+    const filePath = path.resolve(__dirname, '/Users/muskansindhu/Desktop/MoM-bot/recordings/rec1.mp3');
+
+    try {
+        const res = await nodewhisper(filePath, {
+            modelName: 'base.en', 
+            autoDownloadModelName: 'base.en', 
+        });
+
+         
+        const jsonOutput = JSON.stringify(res)
+        fs.writeFileSync('/Users/muskansindhu/Desktop/MoM-bot/whisper_output.json', jsonOutput);
+
+    } catch (error) {
+        console.error('Error during inference:', error);
+    }
+}
+
 client.on(Events.VoiceStateUpdate, (oldState, newState) => {
     const userLeft = newState.channelId === null;
     const userJoined = oldState.channelId === null;
@@ -95,10 +116,16 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
             convertPcmToMp3(pcmFilePath, mp3FilePath).then(() => {
                 fs.unlinkSync(pcmFilePath);
                 console.log(`Converted ${pcmFilePath} to ${mp3FilePath}`);
+
+                transcribeAudioToJson().then(()=>{
+                    console.log('Transcribed successfully!');
+                }).catch(err=>{
+                    console.error('Unable to transcribe!', err);
+                })
+
             }).catch(err => {
                 console.error('Error during MP3 conversion:', err);
             });
-
             userStreams.delete(userId);
         }
     } else if (userJoined) {
@@ -136,6 +163,13 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
 
                         convertPcmToMp3(pcmFilePath, mp3FilePath).then(() => {
                             fs.unlinkSync(pcmFilePath);
+
+                            transcribeAudioToJson().then(()=>{
+                                console.log('Transcribed successfully!');
+                            }).catch(err=>{
+                                console.error('Unable to transcribe!', err);
+                            })
+                            
                         }).catch(err => {
                             console.error('Error during MP3 conversion:', err);
                         });
