@@ -1,189 +1,92 @@
-import 'dotenv/config';
-import path from 'path'
-import { nodewhisper } from 'nodejs-whisper'
-import { Client, GatewayIntentBits, Events } from "discord.js";
+import "dotenv/config";
+import { Client, Events, GatewayIntentBits, VoiceChannel } from "discord.js";
 import { joinVoiceChannel, getVoiceConnection } from "@discordjs/voice";
 
-const fs = require('fs');
-const { opus } = require('prism-media');
-const ffmpeg = require('fluent-ffmpeg');
+import { logger } from "./logger";
+import { Transcription } from "./services/transcription";
 
+const fs = require("fs");
+const path = require("path");
 
 const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds, 
-        GatewayIntentBits.GuildMessages, 
-        GatewayIntentBits.MessageContent, 
-        GatewayIntentBits.GuildVoiceStates
-    ]
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildVoiceStates,
+  ],
 });
 
-const userStreams: Map<string, any> = new Map(); 
+const transcription = new Transcription();
 
-client.on('ready', (c) => {
-    console.log(`Bot is online as ${c.user.tag}`);
+client.on(Events.ClientReady, (bot) => {
+  logger.info(`${bot.user.tag} Logged in!`);
 });
 
-client.on('messageCreate', (message) => {
-    if (message.author.bot) return;
+const activeRecordings = new Set<string>();
+const receivers = new Set<string>();
 
-    if (message.content === "!ping") {
-        message.channel.send('hey');
-    }
-});
+client.on("voiceStateUpdate", async (oldState, newState) => {
+  const newChannel = newState.channel;
+  const oldChannel = oldState.channel;
+  const botId = client.user?.id;
 
-async function createNewRecording() {
-    if (!fs.existsSync('./recordings')) {
-        fs.mkdirSync('./recordings');
-    };
-    const newFileName = "rec1"
-    const pathToFile = 'recordings/' + newFileName + '.pcm';
-    return fs.createWriteStream(pathToFile);
-}
+  // If user joined a channel
+  if (newChannel && newChannel instanceof VoiceChannel) {
+    const nonMoMBot = newChannel.members.filter((m) => !m.user.bot);
 
-function convertPcmToMp3(inputFilePath: string, outputFilePath: string) {
-    return new Promise((resolve, reject) => {
-        ffmpeg(inputFilePath)
-            .inputFormat('s16le') // PCM format
-            .inputOptions([
-                '-ar 48000',        // Input sample rate
-                '-ac 2',            // Input channels
-                '-f s16le',         // Force input format
-            ])
-            .outputOptions([
-                '-acodec libmp3lame',  // MP3 codec
-                '-ar 48000',           // Maintain sample rate
-                '-ac 2',               // Maintain stereo
-                '-b:a 128k'            // Bit rate
-            ])
-            .output(outputFilePath)
-            .on('end', () => {
-                console.log(`Conversion to MP3 completed: ${outputFilePath}`);
-                resolve(outputFilePath);
-            })
-            .on('error', (err: any) => {
-                console.error('Error during conversion:', err);
-                reject(err);
-            })
-            .run();
-    });
-}
+    // Only proceed if there are real users
+    if (nonMoMBot.size > 0) {
+      const connection = joinVoiceChannel({
+        channelId: newChannel.id,
+        guildId: newChannel.guild.id,
+        adapterCreator: newChannel.guild.voiceAdapterCreator,
+      });
 
-async function transcribeAudioToJson() {
-    const filePath = path.resolve(__dirname, '/Users/muskansindhu/Desktop/MoM-bot/recordings/rec1.mp3');
+      const receiver = connection.receiver;
 
-    try {
-        const res = await nodewhisper(filePath, {
-            modelName: 'base.en', 
-            autoDownloadModelName: 'base.en', 
+      if (!receivers.has(newChannel.guild.id)) {
+        receivers.add(newChannel.guild.id);
+
+        receiver.speaking.on("start", async (userId) => {
+          if (!activeRecordings.has(userId)) {
+            activeRecordings.add(userId);
+            logger.info(`Started recording user ${userId}`);
+            transcription.transcribe(receiver, userId);
+          }
         });
-
-         
-        const jsonOutput = JSON.stringify(res)
-        fs.writeFileSync('/Users/muskansindhu/Desktop/MoM-bot/whisper_output.json', jsonOutput);
-
-    } catch (error) {
-        console.error('Error during inference:', error);
-    }
-}
-
-client.on(Events.VoiceStateUpdate, (oldState, newState) => {
-    const userLeft = newState.channelId === null;
-    const userJoined = oldState.channelId === null;
-    const guildId = oldState.guild.id;
-
-    if (userLeft) {
-        console.log('User left channel:', oldState.channelId);
-
-        const connection = getVoiceConnection(guildId);
-
-        if (connection) {
-            const channel = oldState.channel;
-            if (channel && channel.members.filter(member => !member.user.bot).size === 0) {
-                console.log(`Channel ${channel.name} is empty, bot leaving.`);
-                connection.destroy(); 
-            }
-        }
-
-        const userId = oldState.id;
-        const audioStream = userStreams.get(userId);
-        if (audioStream) {
-            audioStream.destroy();
-
-            const pcmFilePath = `recordings/rec1.pcm`;
-            const mp3FilePath = pcmFilePath.replace('.pcm', '.mp3');
-
-            convertPcmToMp3(pcmFilePath, mp3FilePath).then(() => {
-                fs.unlinkSync(pcmFilePath);
-                console.log(`Converted ${pcmFilePath} to ${mp3FilePath}`);
-
-                transcribeAudioToJson().then(()=>{
-                    console.log('Transcribed successfully!');
-                }).catch(err=>{
-                    console.error('Unable to transcribe!', err);
-                })
-
-            }).catch(err => {
-                console.error('Error during MP3 conversion:', err);
-            });
-            userStreams.delete(userId);
-        }
-    } else if (userJoined) {
-        console.log('User joined channel:', newState.channelId);
-
-        const channel = newState.channel;
-        if (channel) {
-            const connection = joinVoiceChannel({
-                channelId: channel.id,
-                guildId: channel.guild.id,
-                adapterCreator: channel.guild.voiceAdapterCreator,
-            });
-
-            const receiver = connection.receiver;
-
-            receiver.speaking.once('start', (userId) => {
-                console.log(`Recording started for user: ${userId}`);
-                const audioStream = receiver.subscribe(userId);
-                const decoder = new opus.Decoder({ 
-                    frameSize: 960,
-                    channels: 2,
-                    rate: 48000 
-                });
-                const rawAudio = audioStream.pipe(decoder);
-
-                createNewRecording().then((writeStream) => {
-                    rawAudio.pipe(writeStream);
-
-                    audioStream.on('end', () => {
-                        console.log(`Recording ended for user: ${userId}`);
-                        writeStream.end();
-
-                        const pcmFilePath = 'recordings/rec1.pcm'
-                        const mp3FilePath = pcmFilePath.replace('.pcm', '.mp3');
-
-                        convertPcmToMp3(pcmFilePath, mp3FilePath).then(() => {
-                            fs.unlinkSync(pcmFilePath);
-
-                            transcribeAudioToJson().then(()=>{
-                                console.log('Transcribed successfully!');
-                            }).catch(err=>{
-                                console.error('Unable to transcribe!', err);
-                            })
-                            
-                        }).catch(err => {
-                            console.error('Error during MP3 conversion:', err);
-                        });
-                    });
-                });
-
-                userStreams.set(userId, audioStream);
-            });
-
-            console.log(`Bot joined channel: ${channel.name}`);
-        }
+      }
     } else {
-        console.log('User moved channels:', oldState.channelId, newState.channelId);
+      logger.info("No non-bot users in channel, not joining.");
     }
+  }
+
+  // If user left a channel
+  if (oldChannel && (!newChannel || oldChannel.id !== newChannel.id)) {
+    const remainingMembers = oldChannel.members.filter((m) => !m.user.bot);
+
+    // If only the bot is left
+    if (remainingMembers.size === 0) {
+      logger.info(`No more users in ${oldChannel.name}, leaving.`);
+
+      const connection = getVoiceConnection(oldChannel.guild.id);
+      if (connection) {
+        connection.destroy();
+        receivers.delete(oldChannel.guild.id);
+      }
+    }
+  }
+
+  // Log mute/deaf changes
+  if (
+    oldState.selfMute !== newState.selfMute ||
+    oldState.selfDeaf !== newState.selfDeaf
+  ) {
+    const member = newState.member;
+    if (member) {
+      logger.info(`${member.user.tag} changed mute/deaf status.`);
+    }
+  }
 });
 
 client.login(process.env.DISCORD_TOKEN);
