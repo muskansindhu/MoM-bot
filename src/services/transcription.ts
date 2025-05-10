@@ -4,6 +4,7 @@ import prism from "prism-media";
 import ffmpeg from "fluent-ffmpeg";
 import { PassThrough } from "stream";
 import { EndBehaviorType, VoiceReceiver } from "@discordjs/voice";
+import { nodewhisper } from "nodejs-whisper";
 
 import { logger } from "../logger";
 
@@ -115,6 +116,75 @@ export class Transcription {
       logger.debug(`Saving audio chunk ${chunkIndex} for user ${userId}`);
       await this.pcmToWav(pass, outputPath);
       chunkIndex++;
+    }
+  }
+
+  async transcribeAudio(fileName: string) {
+    const filePath = path.resolve(__dirname, fileName);
+
+    const result = await nodewhisper(filePath, {
+      modelName: "base.en",
+      autoDownloadModelName: "base.en",
+      removeWavFileAfterTranscription: false,
+      withCuda: false,
+      logger: console,
+      whisperOptions: {
+        outputInCsv: false,
+        outputInJson: false,
+        outputInJsonFull: false,
+        outputInLrc: false,
+        outputInSrt: true,
+        outputInText: false,
+        outputInVtt: false,
+        outputInWords: false,
+        translateToEnglish: false,
+        wordTimestamps: false,
+        timestamps_length: 20,
+        splitOnWord: true,
+      },
+    });
+
+    return result;
+  }
+
+  async transcribeAllAudios() {
+    const resolvedFolder = path.resolve("recordings");
+    const outputDir = path.resolve("transcriptions");
+
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+
+    const files = fs.readdirSync(resolvedFolder);
+
+    for (const file of files) {
+      const fullPath = path.join(resolvedFolder, file);
+
+      if (fs.statSync(fullPath).isFile()) {
+        try {
+          console.log(`🎧 Transcribing: ${file}`);
+          await this.transcribeAudio(fullPath);
+
+          const baseName = path.parse(file).name.split(".")[0];
+          const generatedSrtPath = path.join(
+            resolvedFolder,
+            `${baseName}.wav.srt`
+          );
+          const outputPath = path.join(outputDir, `${baseName}.srt`);
+
+          if (fs.existsSync(generatedSrtPath)) {
+            const content = fs.readFileSync(generatedSrtPath, "utf-8");
+            fs.writeFileSync(outputPath, content);
+            fs.unlinkSync(generatedSrtPath);
+          } else {
+            console.warn(`⚠️ SRT not found for: ${file}`);
+          }
+
+          console.log(`✅ Done: ${file}`);
+        } catch (err) {
+          console.error(`❌ Failed to transcribe ${file}:`, err);
+        }
+      }
     }
   }
 }

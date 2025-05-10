@@ -73,6 +73,7 @@ client.on("voiceStateUpdate", async (oldState, newState) => {
       if (connection) {
         connection.destroy();
         receivers.delete(oldChannel.guild.id);
+        await transcription.transcribeAllAudios();
       }
     }
   }
