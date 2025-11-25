@@ -74,4 +74,10 @@ assets/                # (optional) Static assets
 transcripts/           # Generated transcript files
 ```
 
+## Sample Message
+
+<div align="center">
+  <img src="https://github.com/muskansindhu/MoM-bot/blob/main/assets/sample.png" width="500" />
+</div>
+
 **Note:** You need valid API keys for Discord, AssemblyAI, and Gemini to run MoM-bot.
