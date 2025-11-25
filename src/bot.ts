@@ -4,6 +4,8 @@ import { joinVoiceChannel, getVoiceConnection } from "@discordjs/voice";
 
 import { logger } from "./logger";
 import { TranscriptionAssemblyAI } from "./services/transcription";
+import { summarizeTranscript } from "./services/summarizer";
+import fs from "fs";
 
 const client = new Client({
   intents: [
@@ -62,6 +64,31 @@ client.on("voiceStateUpdate", async (oldState, newState) => {
       if (connection) {
         connection.destroy();
         receivers.delete(oldChannel.guild.id);
+        const transcriptFiles = fs
+          .readdirSync("./transcripts")
+          .filter((f) => f.endsWith(".txt"))
+          .map((f) => `./transcripts/${f}`)
+          .sort((a, b) => fs.statSync(a).mtimeMs - fs.statSync(b).mtimeMs);
+
+        if (transcriptFiles.length === 0) {
+          logger.warn("⚠️ No transcript file found to summarize.");
+          return;
+        }
+
+        const latestTranscript = transcriptFiles[transcriptFiles.length - 1];
+        logger.info(
+          `📝 Summarizing MOST RECENT transcript: ${latestTranscript}`
+        );
+
+        const summary = await summarizeTranscript(latestTranscript);
+
+        const summaryChannel = oldChannel.guild.channels.cache.find(
+          (c) => c.name === "general" && c.isTextBased()
+        );
+
+        if (summaryChannel && summaryChannel.isTextBased()) {
+          summaryChannel.send("📄 **Meeting Summary**:\n\n" + summary);
+        }
       }
     }
   }
